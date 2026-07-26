@@ -1,0 +1,65 @@
+#include <ESP32Servo.h>
+
+// --- Pin Allocations ---
+const int SERVO_X_PIN = 26;    // Physical Pin 26 - Pan Axis
+const int SERVO_Y_PIN = 27;    // Physical Pin 27 - Tilt Axis
+const int DIAGNOSTIC_LED = 2;  // Built-in Blue Status LED
+
+Servo servoX;
+Servo servoY;
+
+void setup() {
+  // Start high speed hardware serial port line
+  Serial.begin(115200);
+  
+  // Assign pins and initialize hardware tracking state
+  pinMode(DIAGNOSTIC_LED, OUTPUT);
+  
+  servoX.attach(SERVO_X_PIN);
+  servoY.attach(SERVO_Y_PIN);
+  
+  // Initial default boot positioning
+  servoX.write(90);
+  servoY.write(90);
+  
+  // Flash status indicator indicating ready cycle completed
+  digitalWrite(DIAGNOSTIC_LED, HIGH);
+  delay(200);
+  digitalWrite(DIAGNOSTIC_LED, LOW);
+}
+
+void loop() {
+  // Check if coordinates have landed in the hardware buffer
+  if (Serial.available() > 0) {
+    int targetX = 90;
+    int targetY = 90;
+    bool dataReceived = false;
+
+    // BUFFER FLUSHER: Spin through stack until processing the absolute newest packet
+    while (Serial.available() > 0) {
+      targetX = Serial.parseInt();
+      targetY = Serial.parseInt();
+      
+      // Look for the package completion delimiter marker
+      if (Serial.read() == '\n') {
+        dataReceived = true; 
+        // Keep clearing downstream elements to protect loops against lagging frame packets
+      }
+    }
+
+    // Direct write sequence executing exclusively on the newest package data received
+    if (dataReceived) {
+      // Hardware-level boundaries safety protection check
+      targetX = constrain(targetX, 0, 180);
+      targetY = constrain(targetY, 30, 150); 
+      
+      servoX.write(targetX);
+      servoY.write(targetY);
+
+      // DIAGNOSTIC PAYLOAD: Rapid high speed status pulse confirming valid parsed string data
+      digitalWrite(DIAGNOSTIC_LED, HIGH);
+      delayMicroseconds(500); // Ultra-short non-blocking pulse profile
+      digitalWrite(DIAGNOSTIC_LED, LOW);
+    }
+  }
+}
