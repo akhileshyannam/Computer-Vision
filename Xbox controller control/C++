@@ -1,0 +1,48 @@
+#include <ESP32Servo.h>
+
+const int SERVO_X_PIN = 26; // Pan Servo
+const int SERVO_Y_PIN = 27; // Tilt Servo
+
+Servo servoX;
+Servo servoY;
+
+void setup() {
+  Serial.begin(115200);
+  
+  servoX.attach(SERVO_X_PIN);
+  servoY.attach(SERVO_Y_PIN);
+  
+  servoX.write(90);
+  servoY.write(90);
+}
+
+void loop() {
+  // Check if data is waiting in the buffer
+  if (Serial.available() > 0) {
+    int targetX = 90;
+    int targetY = 90;
+    bool dataReceived = false;
+
+    // BUFFER FLUSHER: Read continuously until we get the absolute newest data package
+    while (Serial.available() > 0) {
+      targetX = Serial.parseInt();
+      targetY = Serial.parseInt();
+      
+      // Look for the end of a command package
+      if (Serial.read() == '\n') {
+        dataReceived = true; 
+        // Keep looping! If there are more commands behind this one, 
+        // targetX and targetY will get overwritten by the newer data.
+      }
+    }
+
+    // Only move the servos to the absolute freshest coordinates found
+    if (dataReceived) {
+      targetX = constrain(targetX, 0, 180);
+      targetY = constrain(targetY, 30, 150); // Hardcoded safety limits on the board too
+      
+      servoX.write(targetX);
+      servoY.write(targetY);
+    }
+  }
+}
