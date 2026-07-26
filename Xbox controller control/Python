@@ -1,0 +1,155 @@
+import pygame
+import serial
+import time
+
+# --- Configuration ---
+SERIAL_PORT = "COM9"  # Double-check this against Arduino IDE!
+BAUD_RATE = 115200
+
+try:
+    esp32 = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01, write_timeout=0.01)
+    time.sleep(2)
+    print(f"Connected to ESP32 on {SERIAL_PORT}")
+except Exception as e:
+    print(f"Error connecting to {SERIAL_PORT}: {e}")
+    print("👉 Double-check your COM port number and close the Arduino Serial Monitor!")
+    exit()
+
+pygame.init()
+pygame.joystick.init()
+
+if pygame.joystick.get_count() == 0:
+    print("No controller found! Plug in your Xbox controller and restart.")
+    exit()
+
+joystick = pygame.joystick.Joystick(0)
+joystick.init()
+
+# Track angles incrementally
+pan_angle = 90.0
+tilt_angle = 90.0
+
+# --- Mechanical Limits ---
+MIN_PAN = 0
+MAX_PAN = 180
+MIN_TILT = 10   
+MAX_TILT = 120  
+
+# --- Control Tuning ---
+DEADZONE = 0.30          
+
+# Left Stick (Sweeping) Tuning
+L_MIN_STEP = 1.5           
+L_MAX_STEP = 8.0          
+
+# Right Stick (Fine Aiming) Tuning 
+R_MAX_STEP = 2.5          # Strictly capped at a max step of 4
+
+# D-Pad Tuning
+DPAD_STEP = 1          
+
+# Keep track of history to eliminate lag
+last_sent_pan = 90
+last_sent_tilt = 90
+
+running = True
+clock = pygame.time.Clock()
+
+print(f"Triple-Mode Control Active on {SERIAL_PORT}!")
+print("Left Stick = Fast Sweep | Right Stick = Precision Capped Max 4 | D-Pad = 1-Degree Nudge")
+print("Press 'X' to reset. Ctrl+C to quit.")
+
+try:
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        # 1. Reset check (X Button)
+        if joystick.get_button(2):
+            pan_angle = 90.0
+            tilt_angle = 90.0
+        else:
+            # 2. Read Joystick Axes
+            # Left Stick
+            l_joy_x = joystick.get_axis(0)
+            l_joy_y = joystick.get_axis(1)
+            
+            # Right Stick (Typically Axis 2 or 3 for X, Axis 3 or 4 for Y depending on OS drivers)
+            # Pygame standard Xbox Mapping: Axis 2 = Right Stick X, Axis 3 = Right Stick Y
+            r_joy_x = joystick.get_axis(2)
+            r_joy_y = joystick.get_axis(3)
+
+            # 3. Read D-pad
+            dpad_x, dpad_y = joystick.get_hat(0)
+
+            # --- PAN CALCULATIONS (Horizontal Movement) ---
+            if abs(l_joy_x) > DEADZONE:
+                # Left Stick: High Speed Curve (Max 16)
+                deflection_x = (abs(l_joy_x) - DEADZONE) / (1.0 - DEADZONE)
+                curved_deflection_x = deflection_x ** 2 
+                adaptive_step_x = L_MIN_STEP + (curved_deflection_x * (L_MAX_STEP - L_MIN_STEP))
+                if l_joy_x > 0: pan_angle += adaptive_step_x
+                else: pan_angle -= adaptive_step_x
+                
+            elif abs(r_joy_x) > DEADZONE:
+                # Right Stick: Low Speed Flat Mapping (Max 4)
+                deflection_x = (abs(r_joy_x) - DEADZONE) / (1.0 - DEADZONE)
+                precision_step_x = deflection_x * R_MAX_STEP
+                if r_joy_x > 0: pan_angle += precision_step_x
+                else: pan_angle -= precision_step_x
+                
+            elif dpad_x != 0:
+                # D-pad: Discrete Nudges (1 degree)
+                pan_angle += dpad_x * DPAD_STEP
+
+            # --- TILT CALCULATIONS (Vertical Movement) ---
+            if abs(l_joy_y) > DEADZONE:
+                # Left Stick: High Speed Curve (Max 16)
+                deflection_y = (abs(l_joy_y) - DEADZONE) / (1.0 - DEADZONE)
+                curved_deflection_y = deflection_y ** 2
+                adaptive_step_y = L_MIN_STEP + (curved_deflection_y * (L_MAX_STEP - L_MIN_STEP))
+                if l_joy_y > 0: tilt_angle += adaptive_step_y   
+                else: tilt_angle -= adaptive_step_y           
+                
+            elif abs(r_joy_y) > DEADZONE:
+                # Right Stick: Low Speed Flat Mapping (Max 4)
+                deflection_y = (abs(r_joy_y) - DEADZONE) / (1.0 - DEADZONE)
+                precision_step_y = deflection_y * R_MAX_STEP
+                if r_joy_y > 0: tilt_angle += precision_step_y  
+                else: tilt_angle -= precision_step_y           
+                
+            elif dpad_y != 0:
+                # D-pad: Discrete Nudges (1 degree)
+                if dpad_y > 0: tilt_angle -= DPAD_STEP         
+                else: tilt_angle += DPAD_STEP                  
+
+            # 4. Enforce Safety Boundaries
+            if pan_angle < MIN_PAN: pan_angle = MIN_PAN
+            if pan_angle > MAX_PAN: pan_angle = MAX_PAN
+            
+            if tilt_angle < MIN_TILT: tilt_angle = MIN_TILT
+            if tilt_angle > MAX_TILT: tilt_angle = MAX_TILT
+
+        # Convert to flat integers for transmission
+        current_pan = int(pan_angle)
+        current_tilt = int(tilt_angle)
+
+        # 5. Transmission & Buffer Lag Protection
+        if current_pan != last_sent_pan or current_tilt != last_sent_tilt:
+            try:
+                command = f"{current_pan},{current_tilt}\n"
+                esp32.write(command.encode('utf-8'))
+                
+                last_sent_pan = current_pan
+                last_sent_tilt = current_tilt
+            except serial.SerialTimeoutException:
+                pass 
+
+        clock.tick(60)
+
+except KeyboardInterrupt:
+    print("\nExiting...")
+finally:
+    esp32.close()
+    pygame.quit()
